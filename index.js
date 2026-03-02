@@ -402,140 +402,108 @@ async function sendMessage(page, message, profileUrl, contactName) {
       }).catch(() => { });
     };
 
-    // 2. Nueiti į profilį ir paspausti "Rašyti žinutę" — tai nuves į inbox threadą
+    // 2. Ištraukti narysId ir tiesiogiai atidaryti žinutės rašymo formą
+    let narysId = null;
     if (profileUrl) {
-      const narysMatch = profileUrl.match(/narys=(\d+)/);
-      const narysId = narysMatch ? narysMatch[1] : null;
-      const cleanProfileUrl = narysId
-        ? `https://pazintys.draugas.lt/narys.cfm?narys=${narysId}`
-        : profileUrl;
-
-      console.log(`[SEND] Profilio puslapis: ${cleanProfileUrl}`);
-      await gotoWithRetry(page, cleanProfileUrl);
-      await page.waitForTimeout(2000);
-      await clearOverlays();
-      await closeHelpBox(page);
-
-      try { await page.screenshot({ path: 'before_send.png', timeout: 5000 }); } catch (e) { }
-
-      // Rasti ir paspausti "Rašyti žinutę" mygtuką per Playwright
-      // (navigacija per href eina į thread/list, ne į naują thread)
-      const writeBtn = page.locator([
-        'a:has-text("Rašyti žinutę")',
-        'a:has-text("Parašyk žinutę")',
-        'a[href*="zinutes.cfm"]',
-        '.rasyti-zinute',
-        'a.zinutes-btn'
-      ].join(', ')).first();
-
-      if (await writeBtn.count() > 0) {
-        const href = await writeBtn.getAttribute('href').catch(() => null);
-        console.log(`[SEND] "Rašyti žinutę" button rastas, href="${href}"`);
-
-        // Spausti mygtuką ir laukti navigacijos
-        try {
-          await Promise.all([
-            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
-            writeBtn.click({ force: true })
-          ]);
-        } catch (e) {
-          console.log(`[SEND] waitForNavigation klaida: ${e.message} — tikrinam URL`);
-        }
-
-        await page.waitForTimeout(2000);
-        await clearOverlays();
-        await closeHelpBox(page);
-        console.log(`[SEND] URL po Rašyti klikimo: ${page.url()}`);
-
-        // Jei atsidurėme thread/list — ieškoti kontakto thread'o
-        if (page.url().includes('thread/list') || page.url().includes('zinutes')) {
-          if (contactName) {
-            const shortName = contactName.split('(')[0].trim().split(' ')[0];
-            const threadBtn = page.locator('a.usermenu').filter({ hasText: shortName }).first();
-            if (await threadBtn.count() > 0) {
-              console.log(`[SEND] Rasta a.usermenu su "${shortName}", spaudžiama...`);
-              await Promise.all([
-                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => { }),
-                threadBtn.click({ force: true })
-              ]);
-              await page.waitForTimeout(2000);
-              await clearOverlays();
-              console.log(`[SEND] Thread URL: ${page.url()}`);
-            } else {
-              console.log(`[SEND] Thread "${shortName}" nerastas inbox'e (gali būti nauja)`);
-            }
-          }
-        }
-      } else {
-        console.log('[SEND] "Rašyti žinutę" button nerastas profilio puslapyje');
-      }
-
-      await page.waitForTimeout(1000);
-      await clearOverlays();
-      await closeHelpBox(page);
-      console.log(`[SEND] Galutinis URL prieš textarea: ${page.url()}`);
+      const m = profileUrl.match(/narys=(\d+)/);
+      if (m) narysId = m[1];
     }
 
-    // 3. Jei esame inbox sąraše — rasti kontakto threadą ir atidaryti
-    const currentUrl = page.url();
-    if (currentUrl.includes('thread/list') || currentUrl.includes('zinutes')) {
-      if (contactName) {
-        const shortName = contactName.split('(')[0].trim().split(' ')[0];
-        console.log(`[SEND] Ieškoma thread su: "${shortName}"`);
+    if (narysId) {
+      // Tiesioginis URL į naujo pokalbio formą — aplenkiamas "Rašyti žinutę" mygtukas
+      const composeUrl = `https://pazintys.draugas.lt/zinutes.cfm?kito_narys=${narysId}`;
+      console.log(`[SEND] Tiesiogiai atidaroma forma: ${composeUrl}`);
+      await gotoWithRetry(page, composeUrl);
+      await page.waitForTimeout(3000);
+      await clearOverlays();
+      await closeHelpBox(page);
+      console.log(`[SEND] URL po navigacijos: ${page.url()}`);
+    } else if (profileUrl) {
+      // Fallback: nueiti į profilį ir rasti žinutės URL iš DOM
+      console.log('[SEND] Nėra narysId, einame į profilį...');
+      await gotoWithRetry(page, profileUrl);
+      await page.waitForTimeout(3000);
+      await clearOverlays();
+      await closeHelpBox(page);
 
-        // Naudoti a.usermenu selektorių (kaip processInbox) ir spausti, nepereiti per href
-        const threadBtn = page.locator('a.usermenu').filter({ hasText: shortName }).first();
-        if (await threadBtn.count() > 0) {
-          console.log(`[SEND] Rasta a.usermenu su "${shortName}", spaudžiama...`);
-          await threadBtn.click({ force: true, timeout: 10000 });
+      const zinUrl = await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll('a[href*="zinutes"], a[href*="kito_narys"]'));
+        return links.length > 0 ? links[0].href : null;
+      });
+
+      if (zinUrl) {
+        console.log(`[SEND] Rastas žinutės URL iš profilio: ${zinUrl}`);
+        await gotoWithRetry(page, zinUrl);
+        await page.waitForTimeout(3000);
+        await clearOverlays();
+        await closeHelpBox(page);
+      } else {
+        // Paskutinis: spausti mygtuką
+        const writeBtn = page.locator([
+          'a:has-text("Rašyti žinutę")',
+          'a:has-text("Rašyti")',
+          'a[href*="zinutes"]'
+        ].join(', ')).first();
+        if (await writeBtn.count() > 0) {
+          const href = await writeBtn.getAttribute('href').catch(() => null);
+          if (href && href.includes('zinutes')) {
+            const fullUrl = href.startsWith('http') ? href : `https://pazintys.draugas.lt/${href.replace(/^\//, '')}`;
+            await gotoWithRetry(page, fullUrl);
+          } else {
+            await writeBtn.click({ force: true });
+          }
           await page.waitForTimeout(3000);
           await clearOverlays();
           await closeHelpBox(page);
-          console.log(`[SEND] Thread URL po klikimo: ${page.url()}`);
-        } else {
-          // Fallback: ieškoti bet kurioje nuorodoje
-          const anyLink = page.locator(`a:has-text("${shortName}")`).first();
-          if (await anyLink.count() > 0) {
-            await anyLink.click({ force: true });
-            await page.waitForTimeout(2000);
-          } else {
-            console.log(`[SEND] Thread nerastas pagal vardą "${shortName}"`);
-          }
         }
       }
     }
 
-    try { await page.screenshot({ path: 'thread_open.png', timeout: 5000 }); } catch (e) { }
+    console.log(`[SEND] Galutinis URL prieš textarea: ${page.url()}`);
+    try { await page.screenshot({ path: 'before_send.png', timeout: 5000 }); } catch (e) { }
 
-    // 4. Palaukti textarea
-    let textareaFound = false;
+    // 3. Palaukti textarea
     try {
-      await page.waitForSelector('textarea', { timeout: 8000 });
-      textareaFound = true;
+      await page.waitForSelector('textarea, input[type="text"][name*="zinute"]', { timeout: 10000 });
     } catch (e) {
-      console.log('[SEND] Textarea nelaukiama, bandoma tiesiogiai...');
+      console.log('[SEND] Textarea laukimas nepavyko, bandoma tiesiogiai...');
     }
 
-    // 5. Įterpti žinutę
+    // 4. Įterpti žinutę
     const injected = await page.evaluate((msg) => {
       const selectors = [
         'textarea[placeholder*="žinutę"]',
         'textarea[placeholder*="zinute"]',
+        'textarea[name*="zinute"]',
+        'textarea[name*="message"]',
+        'textarea[name*="text"]',
         'textarea#zinute',
-        'textarea[name="zinute"]',
-        'textarea[name="message"]',
+        'input[type="text"][name*="zinute"]',
+        'input[type="text"][name*="message"]',
         'textarea'
       ];
       for (const sel of selectors) {
         const ta = document.querySelector(sel);
-        if (ta) {
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+        if (ta && ta.offsetParent !== null) {
+          const proto = ta.tagName === 'TEXTAREA'
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
           if (setter) setter.call(ta, msg); else ta.value = msg;
           ta.dispatchEvent(new Event('input', { bubbles: true }));
           ta.dispatchEvent(new Event('change', { bubbles: true }));
           ta.focus();
-          return { found: true, placeholder: ta.placeholder || '', name: ta.name || '' };
+          return { found: true, placeholder: ta.placeholder || '', name: ta.name || '', sel };
         }
+      }
+      // Paskutinis: bet kuri textarea net jei hidden
+      const anyTa = document.querySelector('textarea');
+      if (anyTa) {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+        if (setter) setter.call(anyTa, msg); else anyTa.value = msg;
+        anyTa.dispatchEvent(new Event('input', { bubbles: true }));
+        anyTa.dispatchEvent(new Event('change', { bubbles: true }));
+        return { found: true, placeholder: anyTa.placeholder || '', name: anyTa.name || '', sel: 'textarea(hidden)' };
       }
       return { found: false };
     }, message);
@@ -543,25 +511,26 @@ async function sendMessage(page, message, profileUrl, contactName) {
     if (!injected.found) {
       console.error('[SEND] ❌ Textarea nerasta!');
       try { await page.screenshot({ path: 'send_no_textarea.png', timeout: 5000 }); } catch (e) { }
-      await notifyTelegram('❌ Žinutės laukas nerastas!');
+      await notifyTelegram(`❌ Žinutės laukas nerastas! URL: ${page.url()}`);
       return false;
     }
 
-    console.log(`[SEND] ✅ Žinutė įvesta (textarea: placeholder="${injected.placeholder}" name="${injected.name}")`);
+    console.log(`[SEND] ✅ Žinutė įvesta (sel="${injected.sel}" name="${injected.name}")`);
     await page.waitForTimeout(800);
 
-    // 6. Siųsti
+    // 5. Siųsti
     const sendResult = await page.evaluate(() => {
       const candidates = [
         document.querySelector('button[type="submit"]'),
         document.querySelector('input[type="submit"]'),
         document.querySelector('button.send-msg'),
+        document.querySelector('button.create-comment'),
         document.querySelector('.send-btn'),
-        document.querySelector('button.create-comment')
+        document.querySelector('button:not([type="reset"])')
       ].filter(Boolean);
       if (candidates.length > 0) {
         candidates[0].click();
-        return `clicked:${candidates[0].className}`;
+        return `clicked:${candidates[0].className || candidates[0].type}`;
       }
       const form = document.querySelector('textarea')?.closest('form');
       if (form) { form.submit(); return 'form-submit'; }
@@ -587,6 +556,7 @@ async function sendMessage(page, message, profileUrl, contactName) {
     return false;
   }
 }
+
 
 // --- CHECK REPLIES (Stebimas pokalbių atsakymas) ---
 
