@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Draugas Bot Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Draugas Bot <span id="status-badge" class="badge">Offline</span></h1>
+            <p>Real-time automation monitoring</p>
+        </header>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Profiles Visited</h3>
+                <p id="stat-visited">0</p>
+            </div>
+            <div class="stat-card">
+                <h3>Messages Sent</h3>
+                <p id="stat-sent">0</p>
+            </div>
+            <div class="stat-card">
+                <h3>Approvals</h3>
+                <p id="stat-approvals">0</p>
+            </div>
+            <div class="stat-card">
+                <h3>Crashes</h3>
+                <p id="stat-crashes">0</p>
+            </div>
+        </div>
+
+        <section class="log-section">
+            <h2>Activity Log</h2>
+            <div id="log-container" class="log-container">
+                <div class="log-entry info">Dashboard initialized. Waiting for data...</div>
+            </div>
+        </section>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

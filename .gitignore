@@ -1,0 +1,11 @@
+node_modules/
+.env
+*.png
+*.webp
+cookies.json
+package-lock.json
+draugas.db
+draugas.db-shm
+draugas.db-wal
+activity.json
+bot.lock
