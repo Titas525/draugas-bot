@@ -156,14 +156,35 @@ Parašyk TIK žinutę lietuvių kalba, be kabučių ir paaiškinimų.`;
 
     await page.screenshot({ path: 'send_next_filled.png' });
 
-    // Siųsti
-    const sendBtn = page.locator('button.create-comment, button[type="submit"], input[type="submit"]').first();
-    if (await sendBtn.count() > 0) {
-        await sendBtn.click({ force: true });
-        console.log('✅ Mygtukas paspaustas');
-    } else {
+    // 5. Siųsti — JS click (aplenkia matomumo tikrinimą)
+    const sendResult = await page.evaluate(() => {
+        const selectors = [
+            'button.create-comment',
+            'button[type="submit"]',
+            'input[type="submit"]',
+            '.send-btn',
+            'button'
+        ];
+        for (const sel of selectors) {
+            const btn = document.querySelector(sel);
+            if (btn) {
+                btn.style.display = 'block';
+                btn.style.visibility = 'visible';
+                btn.click();
+                return `clicked: ${btn.className || btn.type}`;
+            }
+        }
+        // Paskutinis: submit forma
+        const form = document.querySelector('textarea')?.closest('form');
+        if (form) { form.submit(); return 'form-submit'; }
+        return null;
+    });
+
+    if (!sendResult) {
         await page.keyboard.press('Enter');
         console.log('Fallback: Enter');
+    } else {
+        console.log(`✅ Siųsti: ${sendResult}`);
     }
 
     // Išsaugoti DB IŠKARTO po siuntimo

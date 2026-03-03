@@ -457,27 +457,37 @@ async function sendMessage(page, message, profileUrl, contactName) {
     await page.waitForTimeout(600);
     try { await page.screenshot({ path: 'thread_open.png', timeout: 3000 }); } catch (e) { }
 
-    // 5. Siųsti — "Siųsti" mygtukas su klase "create-comment"
-    const sendBtn = page.locator('button.create-comment, button[type="submit"], input[type="submit"], .send-btn').first();
-    const btnCount = await sendBtn.count();
-
-    if (btnCount > 0) {
-      await sendBtn.click({ force: true });
-      console.log('[SEND] ✅ Paspaustas siuntimo mygtukas');
-    } else {
-      // Fallback: submit forma arba Enter
-      const submitted = await page.evaluate(() => {
-        const form = document.querySelector('textarea')?.closest('form');
-        if (form) { form.submit(); return true; }
-        return false;
-      });
-      if (!submitted) {
-        await page.keyboard.press('Enter');
-        console.log('[SEND] Fallback: Enter');
-      } else {
-        console.log('[SEND] Fallback: form.submit()');
+    // 5. Siųsti — JS click (aplenkia matomumo tikrinimą)
+    const sendResult = await page.evaluate(() => {
+      const selectors = [
+        'button.create-comment',
+        'button[type="submit"]',
+        'input[type="submit"]',
+        '.send-btn',
+        'button'
+      ];
+      for (const sel of selectors) {
+        const btn = document.querySelector(sel);
+        if (btn) {
+          btn.style.display = 'block';
+          btn.style.visibility = 'visible';
+          btn.click();
+          return `clicked: ${btn.className || btn.type}`;
+        }
       }
+      // Paskutinis: submit forma
+      const form = document.querySelector('textarea')?.closest('form');
+      if (form) { form.submit(); return 'form-submit'; }
+      return null;
+    });
+
+    if (!sendResult) {
+      await page.keyboard.press('Enter');
+      console.log('[SEND] Fallback: Enter');
+    } else {
+      console.log(`[SEND] ✅ Siųsti: ${sendResult}`);
     }
+
 
     await page.waitForTimeout(3000);
     try { await page.screenshot({ path: 'after_send.png', timeout: 5000 }); } catch (e) { }
