@@ -41,7 +41,7 @@ db.exec(`
 
 // --- PREPARED STATEMENTS ---
 const stmts = {
-    upsertContact: db.prepare(`
+  upsertContact: db.prepare(`
     INSERT INTO contacts (name, fullText, city, bio, interests, photoUrl, profileUrl, source, status, updatedAt)
     VALUES (@name, @fullText, @city, @bio, @interests, @photoUrl, @profileUrl, @source, @status, datetime('now'))
     ON CONFLICT(profileUrl) DO UPDATE SET
@@ -53,36 +53,36 @@ const stmts = {
       updatedAt = datetime('now')
   `),
 
-    findContactByName: db.prepare(`SELECT * FROM contacts WHERE name = ? LIMIT 1`),
+  findContactByName: db.prepare(`SELECT * FROM contacts WHERE name = ? LIMIT 1`),
 
-    findContactByUrl: db.prepare(`SELECT * FROM contacts WHERE profileUrl = ? LIMIT 1`),
+  findContactByUrl: db.prepare(`SELECT * FROM contacts WHERE profileUrl = ? LIMIT 1`),
 
-    findContactByNameLike: db.prepare(`SELECT * FROM contacts WHERE name LIKE ? LIMIT 1`),
+  findContactByNameLike: db.prepare(`SELECT * FROM contacts WHERE name LIKE ? LIMIT 1`),
 
-    getContactsByStatus: db.prepare(`SELECT * FROM contacts WHERE status = ? ORDER BY updatedAt DESC`),
+  getContactsByStatus: db.prepare(`SELECT * FROM contacts WHERE status = ? ORDER BY updatedAt DESC`),
 
-    updateContactStatus: db.prepare(`UPDATE contacts SET status = @status, updatedAt = datetime('now') WHERE id = @id`),
+  updateContactStatus: db.prepare(`UPDATE contacts SET status = @status, updatedAt = datetime('now') WHERE id = @id`),
 
-    saveMessage: db.prepare(`
+  saveMessage: db.prepare(`
     INSERT INTO messages (contactId, direction, content, approved)
     VALUES (@contactId, @direction, @content, @approved)
   `),
 
-    getConversation: db.prepare(`
+  getConversation: db.prepare(`
     SELECT * FROM messages WHERE contactId = ? ORDER BY sentAt ASC
   `),
 
-    getLastMessages: db.prepare(`
+  getLastMessages: db.prepare(`
     SELECT * FROM messages WHERE contactId = ? ORDER BY sentAt DESC LIMIT ?
   `),
 
-    isContacted: db.prepare(`
+  isContacted: db.prepare(`
     SELECT COUNT(*) as count FROM messages WHERE contactId = ? AND direction = 'sent'
   `),
 
-    getAllContacts: db.prepare(`SELECT * FROM contacts ORDER BY updatedAt DESC`),
+  getAllContacts: db.prepare(`SELECT * FROM contacts ORDER BY updatedAt DESC`),
 
-    getStats: db.prepare(`
+  getStats: db.prepare(`
     SELECT
       (SELECT COUNT(*) FROM contacts) as totalContacts,
       (SELECT COUNT(*) FROM contacts WHERE status = 'messaged') as messaged,
@@ -91,7 +91,7 @@ const stmts = {
       (SELECT COUNT(*) FROM messages WHERE direction = 'received') as receivedMessages
   `),
 
-    getContactsAwaitingReply: db.prepare(`
+  getContactsAwaitingReply: db.prepare(`
     SELECT c.* FROM contacts c
     WHERE (
       SELECT COUNT(*) FROM messages WHERE contactId = c.id AND direction = 'sent'
@@ -102,109 +102,115 @@ const stmts = {
     ORDER BY c.updatedAt DESC
   `),
 
-    getLastMessageInfo: db.prepare(`
+  getLastMessageInfo: db.prepare(`
     SELECT direction, content, sentAt FROM messages WHERE contactId = ? ORDER BY sentAt DESC LIMIT 1
-  `)
+  `),
+  deleteConversation: db.prepare(`DELETE FROM messages WHERE contactId = ?`)
 };
 
 // --- EXPORTED FUNCTIONS ---
 
 function upsertContact(data) {
-    const params = {
-        name: data.name || '',
-        fullText: data.fullText || null,
-        city: data.city || null,
-        bio: data.bio || null,
-        interests: data.interests || null,
-        photoUrl: data.photoUrl || null,
-        profileUrl: data.profileUrl || null,
-        source: data.source || null,
-        status: data.status || 'new'
-    };
-    try {
-        const result = stmts.upsertContact.run(params);
-        return result.lastInsertRowid || stmts.findContactByUrl.get(params.profileUrl)?.id;
-    } catch (err) {
-        console.error('[DB] upsertContact klaida:', err.message);
-        return null;
-    }
+  const params = {
+    name: data.name || '',
+    fullText: data.fullText || null,
+    city: data.city || null,
+    bio: data.bio || null,
+    interests: data.interests || null,
+    photoUrl: data.photoUrl || null,
+    profileUrl: data.profileUrl || null,
+    source: data.source || null,
+    status: data.status || 'new'
+  };
+  try {
+    const result = stmts.upsertContact.run(params);
+    return result.lastInsertRowid || stmts.findContactByUrl.get(params.profileUrl)?.id;
+  } catch (err) {
+    console.error('[DB] upsertContact klaida:', err.message);
+    return null;
+  }
 }
 
 function findContact(name) {
-    let contact = stmts.findContactByName.get(name);
-    if (!contact) {
-        contact = stmts.findContactByNameLike.get(`%${name}%`);
-    }
-    return contact || null;
+  let contact = stmts.findContactByName.get(name);
+  if (!contact) {
+    contact = stmts.findContactByNameLike.get(`%${name}%`);
+  }
+  return contact || null;
 }
 
 function findContactByUrl(url) {
-    return stmts.findContactByUrl.get(url) || null;
+  return stmts.findContactByUrl.get(url) || null;
 }
 
 function updateStatus(contactId, status) {
-    stmts.updateContactStatus.run({ id: contactId, status });
+  stmts.updateContactStatus.run({ id: contactId, status });
 }
 
 function saveMessage(contactId, direction, content, approved = true) {
-    try {
-        stmts.saveMessage.run({
-            contactId,
-            direction,
-            content,
-            approved: approved ? 1 : 0
-        });
-    } catch (err) {
-        console.error('[DB] saveMessage klaida:', err.message);
-    }
+  try {
+    stmts.saveMessage.run({
+      contactId,
+      direction,
+      content,
+      approved: approved ? 1 : 0
+    });
+  } catch (err) {
+    console.error('[DB] saveMessage klaida:', err.message);
+  }
 }
 
 function getConversation(contactId) {
-    return stmts.getConversation.all(contactId);
+  return stmts.getConversation.all(contactId);
 }
 
 function getLastMessages(contactId, limit = 10) {
-    return stmts.getLastMessages.all(contactId, limit).reverse();
+  return stmts.getLastMessages.all(contactId, limit).reverse();
 }
 
 function isContacted(contactId) {
-    const row = stmts.isContacted.get(contactId);
-    return row && row.count > 0;
+  const row = stmts.isContacted.get(contactId);
+  return row && row.count > 0;
 }
 
 function getContactsByStatus(status) {
-    return stmts.getContactsByStatus.all(status);
+  return stmts.getContactsByStatus.all(status);
 }
 
 function getAllContacts() {
-    return stmts.getAllContacts.all();
+  return stmts.getAllContacts.all();
 }
 
 function getStats() {
-    return stmts.getStats.get();
+  return stmts.getStats.get();
 }
 
 function getContactsAwaitingReply() {
-    return stmts.getContactsAwaitingReply.all();
+  return stmts.getContactsAwaitingReply.all();
 }
 
 function getLastMessageInfo(contactId) {
-    return stmts.getLastMessageInfo.get(contactId) || null;
+  return stmts.getLastMessageInfo.get(contactId) || null;
+}
+
+function deleteConversation(contactId) {
+  return stmts.deleteConversation.run(contactId);
 }
 
 module.exports = {
-    db,
-    upsertContact,
-    findContact,
-    findContactByUrl,
-    updateStatus,
-    saveMessage,
-    getConversation,
-    getLastMessages,
-    isContacted,
-    getContactsByStatus,
-    getContactsAwaitingReply,
-    getLastMessageInfo,
-    getAllContacts,
-    getStats
+  db,
+  upsertContact,
+  findContact,
+  findContactByUrl,
+  updateStatus,
+  saveMessage,
+  getConversation,
+  getLastMessages,
+  isContacted,
+  getContactsByStatus,
+  getContactsAwaitingReply,
+  getLastMessageInfo,
+  getAllContacts,
+  getStats,
+  deleteConversation
 };

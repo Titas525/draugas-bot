@@ -61,8 +61,7 @@ async function clearOverlays(page) {
 async function login(page) {
     console.log('\n[LOGIN] Jungiamasi...');
     await gotoWithRetry(page, 'https://www.draugas.lt/');
-    await clearOverlays(page);
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(2000);
 
     const isLoggedIn = await page.evaluate(() => {
         const t = document.body.innerText;
@@ -74,7 +73,17 @@ async function login(page) {
         return true;
     }
 
-    // Pašalinti overlayus per JS
+    // 1. Pirma sutikti su cookie consent mygtuku (jei matomas)
+    try {
+        const consentBtn = page.locator('button:has-text("SUTINKU"), button:has-text("Sutinku"), #didomi-notice-agree-button').first();
+        if (await consentBtn.count() > 0 && await consentBtn.isVisible({ timeout: 3000 })) {
+            await consentBtn.click({ force: true });
+            console.log('[LOGIN] Cookie sutikimas paspaustas.');
+            await page.waitForTimeout(1000);
+        }
+    } catch (e) { /* nėra consent */ }
+
+    // 2. Pašalinti likusius overlayus per JS
     await page.evaluate(() => {
         document.querySelectorAll('[id*="didomi"], [class*="consent"], [class*="cookie"]')
             .forEach(el => el.remove());
@@ -84,18 +93,31 @@ async function login(page) {
     await page.waitForTimeout(500);
 
     try {
-        await page.fill('.email.__loginEmail', USER_EMAIL);
-        await page.fill('.pass.__loginPassword', USER_PASS);
-        const submitBtn = page.locator('.submit, button[type="submit"], input[type="submit"]').first();
-        if (await submitBtn.count() > 0) await submitBtn.click({ force: true });
-        else await page.keyboard.press('Enter');
+        // 3. Užpildyti loginimo formą
+        await page.fill('.email.__loginEmail', USER_EMAIL, { force: true });
+        await page.fill('.pass.__loginPassword', USER_PASS, { force: true });
+        console.log('[LOGIN] Forma užpildyta.');
 
-        await page.waitForFunction(
-            () => document.body.innerText.includes('Arturas') ||
-                document.body.innerText.includes('Artūras') ||
-                document.body.innerText.includes('Koreguoti profilį'),
-            { timeout: 20000 }
-        ).catch(() => { });
+        // 4. Pažymėti "Įsiminti" checkbox
+        try {
+            const rememberMe = page.locator('#isiminti, input[name="RememberMe"]').first();
+            if (await rememberMe.count() > 0 && !(await rememberMe.isChecked())) {
+                await rememberMe.check({ force: true });
+                console.log('[LOGIN] "Įsiminti" pažymėta.');
+            }
+        } catch (e) { /* ignore */ }
+
+        // 5. Playwright click ant rodyklės / submit mygtuko šalia slaptažodžio
+        const loginSubmit = page.locator('form:has(.pass.__loginPassword) button[type="submit"], form:has(.pass.__loginPassword) .submit, form:has(.pass.__loginPassword) input[type="submit"], form:has(.pass.__loginPassword) button').first();
+        if (await loginSubmit.count() > 0) {
+            await loginSubmit.click({ force: true });
+            console.log('[LOGIN] Submit mygtukas paspaustas.');
+        } else {
+            await page.locator('.pass.__loginPassword').press('Enter');
+            console.log('[LOGIN] Enter paspaustas (fallback).');
+        }
+
+        await page.waitForTimeout(4000);
 
         const ok = await page.evaluate(() => {
             const t = document.body.innerText;
@@ -104,9 +126,9 @@ async function login(page) {
 
         if (ok) {
             console.log('[LOGIN] ✅ Prisijungta sėkmingai!');
-            // Išsaugoti cookies
             const cookies = await page.context().cookies();
             fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
+            console.log(`[LOGIN] Cookies išsaugotos (${cookies.length} vnt.)`);
             return true;
         }
     } catch (e) {
