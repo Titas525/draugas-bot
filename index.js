@@ -410,53 +410,52 @@ async function sendMessage(page, message, profileUrl, contactName) {
         : profileUrl;
       console.log(`[SEND] Profilio puslapis: ${cleanUrl}`);
       await gotoWithRetry(page, cleanUrl);
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(4000);
       await clearOverlays();
       await closeHelpBox(page);
     }
 
     console.log(`[SEND] URL: ${page.url()}`);
-    try { await page.screenshot({ path: 'before_send.png', timeout: 5000 }); } catch (e) { }
+    try { await page.screenshot({ path: 'before_send.png', timeout: 3000 }); } catch (e) { }
 
     // 3. Rasti textarea — profilio puslapyje yra "Rašyti komentarą"
+    // Textarea gali būti hidden CSS, tad pirma bandome JS inject, paskui fill()
     const textarea = page.locator('textarea').first();
     const taCount = await textarea.count();
     console.log(`[SEND] Textarea skaičius: ${taCount}`);
 
     if (taCount === 0) {
       console.error('[SEND] ❌ Textarea nerasta puslapyje!');
-      try { await page.screenshot({ path: 'send_no_textarea.png', timeout: 5000 }); } catch (e) { }
+      try { await page.screenshot({ path: 'send_no_textarea.png', timeout: 3000 }); } catch (e) { }
       await notifyTelegram(`❌ Žinutės laukas nerastas! URL: ${page.url()}`);
       return false;
     }
 
-    // 4. Įvesti žinutę naudojant Playwright fill (patikimiau nei JS inject)
-    try {
-      await textarea.scrollIntoViewIfNeeded({ timeout: 5000 });
-      await textarea.click({ force: true, timeout: 5000 });
-      await textarea.fill(message);
-      console.log(`[SEND] ✅ Žinutė įvesta per Playwright fill()`);
-    } catch (fillErr) {
-      console.log(`[SEND] fill() nepavyko (${fillErr.message}), bandoma JS inject...`);
-      // Fallback: JS inject
-      const injected = await page.evaluate((msg) => {
-        const ta = document.querySelector('textarea');
-        if (!ta) return false;
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-        if (setter) setter.call(ta, msg); else ta.value = msg;
-        ta.dispatchEvent(new Event('input', { bubbles: true }));
-        ta.dispatchEvent(new Event('change', { bubbles: true }));
-        ta.focus();
-        return true;
-      }, message);
-      if (!injected) {
-        await notifyTelegram(`❌ Žinutės laukas nerastas! URL: ${page.url()}`);
-        return false;
-      }
-    }
+    // 4. Įvesti žinutę — JS inject (veikia net jei elementas hidden)
+    const injected = await page.evaluate((msg) => {
+      const ta = document.querySelector('textarea');
+      if (!ta) return false;
+      // Pabandyti paversti matomą
+      ta.style.display = 'block';
+      ta.style.visibility = 'visible';
+      ta.removeAttribute('hidden');
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+      if (setter) setter.call(ta, msg); else ta.value = msg;
+      ta.dispatchEvent(new Event('focus', { bubbles: true }));
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      ta.dispatchEvent(new Event('change', { bubbles: true }));
+      ta.focus();
+      return true;
+    }, message);
 
-    await page.waitForTimeout(800);
-    try { await page.screenshot({ path: 'thread_open.png', timeout: 5000 }); } catch (e) { }
+    if (!injected) {
+      console.error('[SEND] ❌ Textarea nerasta per JS!');
+      await notifyTelegram(`❌ Žinutės laukas nerastas! URL: ${page.url()}`);
+      return false;
+    }
+    console.log('[SEND] ✅ Žinutė įvesta per JS inject');
+    await page.waitForTimeout(600);
+    try { await page.screenshot({ path: 'thread_open.png', timeout: 3000 }); } catch (e) { }
 
     // 5. Siųsti — "Siųsti" mygtukas su klase "create-comment"
     const sendBtn = page.locator('button.create-comment, button[type="submit"], input[type="submit"], .send-btn').first();
