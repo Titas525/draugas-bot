@@ -214,8 +214,8 @@ async function waitForTelegramApproval(contextInfo) {
     }
   }
 
-  await notifyTelegram('⏰ Baigėsi laukimo laikas (15 min). Praleidžiama.');
-  return false;
+  await notifyTelegram('⏰ Baigėsi laukimo laikas (15 min). Laukiamas darbas pristabdomas.');
+  return 'TIMEOUT';
 }
 
 async function gotoWithRetry(page, url, options = {}, retries = 3) {
@@ -366,7 +366,7 @@ async function analyzeAndRespond(profile, pageHistory = []) {
     contextMsg += `👉 Rašykite "OK" siuntimui arba "NO" atšaukimui.`;
 
     const approved = await waitForTelegramApproval(contextMsg);
-    if (approved) {
+    if (approved === true) {
       botStatus.stats.approvals++;
       botStatus.stats.messagesSent++;
       logActivity(`Žinutė patvirtinta: ${profile.fullText || profile.name}`, 'success');
@@ -375,10 +375,14 @@ async function analyzeAndRespond(profile, pageHistory = []) {
         DB.saveMessage(contact.id, 'sent', text);
         DB.updateStatus(contact.id, 'messaged');
       }
+      return text;
+    } else if (approved === 'TIMEOUT') {
+      logActivity(`Laikas baigėsi. Laukimas atidėtas: ${profile.fullText || profile.name}`, 'warn');
+      return 'TIMEOUT';
     } else {
       logActivity(`Žinutė nepatvirtinta: ${profile.fullText || profile.name}`, 'warn');
+      return null;
     }
-    return approved ? text : null;
   } catch (err) {
     botStatus.stats.crashes++;
     logActivity(`Gemini klaida: ${err.message}`, 'error');
@@ -389,15 +393,19 @@ async function analyzeAndRespond(profile, pageHistory = []) {
     fallbackMsg += `🤖 ŽINUTĖ:\n"${fallback}"\n\n👉 Rašykite "OK" siuntimui.`;
     const contextMsg = fallbackMsg;
     const approved = await waitForTelegramApproval(contextMsg);
-    if (approved) {
+
+    if (approved === true) {
       botStatus.stats.approvals++;
       botStatus.stats.messagesSent++;
       if (contact && contact.id) {
         DB.saveMessage(contact.id, 'sent', fallback);
         DB.updateStatus(contact.id, 'messaged');
       }
+      return fallback;
+    } else if (approved === 'TIMEOUT') {
+      return 'TIMEOUT';
     }
-    return approved ? fallback : null;
+    return null;
   }
 }
 
@@ -796,272 +804,209 @@ async function processInbox(page) {
   }
 }
 
-// --- SEARCH NEW CONTACTS ---
+// --- PROCESS DB CONTACTS ---
 
-async function searchNewContacts(page) {
-  console.log('--- IEŠKOMA NAUJŲ KONTAKTŲ ---');
+async function processDatabaseContacts(page) {
+    console.log('--- APDOROJAMI DB KONTAKTAI ---');
 
-  for (const searchUrl of SEARCH_URLS) {
-    console.log(`\n[PAIEŠKA] ${searchUrl}`);
-    try {
-      await gotoWithRetry(page, searchUrl);
-      await page.waitForTimeout(5000);
-      await closeHelpBox(page);
+    const contacts = DB.getContactsByStatus('new');
+    console.log(`[DB] Rasta naujų kontaktų: ${contacts.length}`);
 
-      const profileLinks = await page.evaluate(() => {
-        const items = Array.from(document.querySelectorAll('.nario-foto, a[href*="narys.cfm"], .member-item, .user-item'));
-        const seen = new Set();
-        return items.map(item => {
-          const anchor = (item instanceof HTMLAnchorElement) ? item : item.querySelector('a[href*="narys.cfm"]');
-          const link = anchor ? anchor.href : null;
-          const nameText = item.innerText.trim();
-          const imgEl = item.querySelector('img');
-          const photoUrl = imgEl ? imgEl.src : '';
-          return { link, nameText, photoUrl };
-        }).filter(p => {
-          if (!p.link || p.nameText.length < 2 || seen.has(p.link)) return false;
-          seen.add(p.link);
-          return true;
-        }).slice(0, 10);
-      });
+    if (contacts.length === 0) {
+        console.log('[DB] Nėra naujų kontaktų. Fone turėtų veikti search-contacts.js');
+        return;
+    }
 
-      console.log(`[PAIEŠKA] Rasta profilių: ${profileLinks.length}`);
-
-      for (const p of profileLinks) {
-        if (isBlacklisted(p.nameText)) {
-          logActivity(`Praleidžiamas juodajame sąraše: ${p.nameText}`, 'warn');
-          continue;
-        }
-
-        // Patikrinti ar jau kontaktuotas
-        const existing = DB.findContactByUrl(p.link);
-        if (existing && existing.status !== 'new') {
-          console.log(`[PAIEŠKA] Jau kontaktuotas: ${p.nameText}, praleidžiama.`);
-          continue;
+    for (const c of contacts) {
+        if (isBlacklisted(c.name, c.fullText)) {
+            logActivity(`Praleidžiamas juodajame sąraše: ${c.name}`, 'warn');
+            DB.updateStatus(c.id, 'skipped');
+            continue;
         }
 
         botStatus.stats.profilesVisited++;
         try {
-          await gotoWithRetry(page, p.link);
-          await page.waitForTimeout(3000);
-          await closeHelpBox(page);
+            await gotoWithRetry(page, c.profileUrl);
+            await page.waitForTimeout(3000);
+            await closeHelpBox(page);
 
-          const profile = await page.evaluate(() => {
-            const nameMatch = document.querySelector('h1')?.innerText.trim() || 'Narys';
-            const allText = document.body.innerText;
+            const profile = await page.evaluate(() => {
+                const nameMatch = document.querySelector('h1')?.innerText.trim() || 'Narys';
+                const allText = document.body.innerText;
 
-            // Miestas
-            let city = '';
-            const cityMatch = allText.match(/Miestas:\s*([^\n]+)/i) || allText.match(/Vietovė:\s*([^\n]+)/i);
-            if (cityMatch) city = cityMatch[1].trim();
-            const nm = nameMatch.match(/\(.*?,\s*(\w+)\)/);
-            if (!city && nm) city = nm[1];
+                let city = '';
+                const cityMatch = allText.match(/Miestas:\s*([^\n]+)/i) || allText.match(/Vietovė:\s*([^\n]+)/i);
+                if (cityMatch) city = cityMatch[1].trim();
+                const nm = nameMatch.match(/\(.*?,\s*(\w+)\)/);
+                if (!city && nm) city = nm[1];
 
-            // Amžius
-            let age = '';
-            const ageMatch = nameMatch.match(/(\d+)\s*m\./) || allText.match(/Amžius:\s*(\d+)/i);
-            if (ageMatch) age = ageMatch[1];
+                let age = '';
+                const ageMatch = nameMatch.match(/(\d+)\s*m\./) || allText.match(/Amžius:\s*(\d+)/i);
+                if (ageMatch) age = ageMatch[1];
 
-            const name = nameMatch.split(' ')[0] || nameMatch;
+                const name = nameMatch.split(' ')[0] || nameMatch;
 
-            // Extra details
-            const parseDetail = (regex) => (allText.match(regex) || [])[1]?.trim() || '';
-            const vaikai = parseDetail(/Vaikai:\s*([^\n]+)/i);
-            const domina = parseDetail(/Domina:\s*([^\n]+)/i);
-            const ugis = parseDetail(/Ūgis:\s*([^\n]+)/i);
-            const sudejimas = parseDetail(/Sudėjimas:\s*([^\n]+)/i);
-            const akys = parseDetail(/Akys:\s*([^\n]+)/i);
-            const plaukai = parseDetail(/Plaukai:\s*([^\n]+)/i);
-            const gimtadienis = parseDetail(/Gimtadienis:\s*([^\n]+)/i);
-            const zodiakas = parseDetail(/Zodiakas:\s*([^\n]+)/i);
-            const zalingi = parseDetail(/Žalingi įpročiai:\s*([^\n]+)/i);
+                const parseDetail = (regex) => (allText.match(regex) || [])[1]?.trim() || '';
+                const vaikai = parseDetail(/Vaikai:\s*([^\n]+)/i);
+                const domina = parseDetail(/Domina:\s*([^\n]+)/i);
+                const ugis = parseDetail(/Ūgis:\s*([^\n]+)/i);
+                const sudejimas = parseDetail(/Sudėjimas:\s*([^\n]+)/i);
+                const akys = parseDetail(/Akys:\s*([^\n]+)/i);
+                const plaukai = parseDetail(/Plaukai:\s*([^\n]+)/i);
+                const gimtadienis = parseDetail(/Gimtadienis:\s*([^\n]+)/i);
+                const zodiakas = parseDetail(/Zodiakas:\s*([^\n]+)/i);
+                const zalingi = parseDetail(/Žalingi įpročiai:\s*([^\n]+)/i);
 
-            const bio = document.querySelector('.nario-informacija, .profile-info, .about-me')?.innerText.trim() || '';
-            const interests = Array.from(document.querySelectorAll('.pomegis, .hobby, .interest')).map(el => el.innerText.trim()).join(', ');
+                const bio = document.querySelector('.nario-informacija, .profile-info, .about-me')?.innerText.trim() || '';
+                const interests = Array.from(document.querySelectorAll('.pomegis, .hobby, .interest')).map(el => el.innerText.trim()).join(', ');
 
-            const photoImg = document.querySelector('.nario-foto img, .profile-photo img, img.user-photo');
-            const photoUrl = photoImg ? photoImg.src : '';
+                const photoImg = document.querySelector('.nario-foto img, .profile-photo img, img.user-photo');
+                const photoUrl = photoImg ? photoImg.src : '';
 
-            // Narys ID iš URL
-            const narysMath = window.location.href.match(/narys=(\d+)/);
-            const narysId = narysMath ? narysMath[1] : null;
-            const profileUrl = narysId ? `https://pazintys.draugas.lt/narys.cfm?narys=${narysId}` : window.location.href;
+                return {
+                    name, city, age, bio, interests, photoUrl,
+                    vaikai, domina, ugis, sudejimas, akys, plaukai, gimtadienis, zodiakas, zalingi
+                };
+            });
 
-            return {
-              name, city, age, bio, interests, photoUrl, profileUrl, narysId,
-              vaikai, domina, ugis, sudejimas, akys, plaukai, gimtadienis, zodiakas, zalingi
+            logActivity(`Kaunas kontaktas iš DB: ${profile.name} (${profile.city})`, 'info');
+
+            const profileData = {
+                name: profile.name,
+                fullText: c.fullText || profile.name,
+                city: profile.city || c.city || 'Kaunas',
+                age: profile.age,
+                bio: profile.bio || c.bio,
+                interests: profile.interests || c.interests,
+                photoUrl: profile.photoUrl || c.photoUrl,
+                profileUrl: c.profileUrl,
+                source: c.source,
+                vaikai: profile.vaikai,
+                domina: profile.domina,
+                ugis: profile.ugis,
+                sudejimas: profile.sudejimas,
+                akys: profile.akys,
+                plaukai: profile.plaukai,
+                gimtadienis: profile.gimtadienis,
+                zodiakas: profile.zodiakas,
+                zalingi: profile.zalingi
             };
-          });
 
-          // Tik Kaunas kontaktai
-          const isKaunas = profile.city && profile.city.toLowerCase().includes('kaunas');
-          const nameHasKaunas = p.nameText.toLowerCase().includes('kaunas');
-
-          if (!isKaunas && !nameHasKaunas) {
-            console.log(`[PAIEŠKA] Ne Kaunas (${profile.city || 'nežinoma'}): ${profile.name}, praleidžiama.`);
-            continue;
-          }
-
-          logActivity(`Kaunas kontaktas: ${profile.name} (${profile.city})`, 'info');
-
-          // Išsaugoti DB
-          // Profilio URL i\u0161 narys evaluate
-          const cleanProfileUrl = profile.profileUrl || p.link;
-          const fullText = profile.name; // naudosime tik var\u0111
-
-          const contactId = DB.upsertContact({
-            name: profile.name,
-            fullText: profile.name,
-            city: profile.city || 'Kaunas',
-            bio: profile.bio,
-            interests: profile.interests,
-            photoUrl: profile.photoUrl || p.photoUrl,
-            profileUrl: cleanProfileUrl,
-            source: searchUrl,
-            status: 'new'
-          });
-
-          // Patikrinti ar jau siuntėme žinutę
-          if (contactId && DB.isContacted(contactId)) {
-            console.log(`[PAIEŠKA] Jau siuntėme žinutę: ${profile.name}`);
-            continue;
-          }
-
-          const profileData = {
-            name: profile.name,
-            fullText: profile.name,
-            city: profile.city || 'Kaunas',
-            age: profile.age,
-            bio: profile.bio,
-            interests: profile.interests,
-            photoUrl: profile.photoUrl || p.photoUrl,
-            profileUrl: cleanProfileUrl,
-            source: searchUrl,
-            // Extended fields
-            vaikai: profile.vaikai,
-            domina: profile.domina,
-            ugis: profile.ugis,
-            sudejimas: profile.sudejimas,
-            akys: profile.akys,
-            plaukai: profile.plaukai,
-            gimtadienis: profile.gimtadienis,
-            zodiakas: profile.zodiakas,
-            zalingi: profile.zalingi
-          };
-
-          // --- NAUJA: Išvalyti seną vietinę istoriją prieš nuskaitant naują ---
-          if (contactId) {
             console.log(`[PAIEŠKA] Trinamas senas pokalbis iš DB kontaktui ${profile.name}...`);
-            DB.deleteConversation(contactId);
-          }
+            DB.deleteConversation(c.id);
 
-          let history = [];
-          console.log(`[PAIEŠKA] Atidaromas Pop-up istorijai patikrinti...`);
-          const writeBtn = page.locator('.button-write-message, .button-new-message, .__callNewMessage').first();
-          if (await writeBtn.count() > 0 && await writeBtn.isVisible()) {
-            await writeBtn.click();
-            await page.waitForTimeout(2000);
+            let history = [];
+            console.log(`[PAIEŠKA] Atidaromas Pop-up istorijai patikrinti...`);
+            const writeBtn = page.locator('.button-write-message, .button-new-message, .__callNewMessage').first();
+            if (await writeBtn.count() > 0 && await writeBtn.isVisible()) {
+                await writeBtn.click();
+                await page.waitForTimeout(2000);
 
-            history = await page.evaluate((junkList) => {
-              const isJunk = (txt) => junkList.some(j => txt.includes(j));
-              const msgs = Array.from(document.querySelectorAll('.message-text, .msg-content, .text-content, .message-bubble, .msg_text, .chat-message, .view-message'));
-              if (msgs.length > 0) return msgs.slice(-15).map(m => m.innerText.trim()).filter(t => t.length > 0 && !isJunk(t));
-              return [];
-            }, JUNK_KEYWORDS);
+                history = await page.evaluate((junkList) => {
+                    const isJunk = (txt) => junkList.some(j => txt.includes(j));
+                    const msgs = Array.from(document.querySelectorAll('.message-text, .msg-content, .text-content, .message-bubble, .msg_text, .chat-message, .view-message'));
+                    if (msgs.length > 0) return msgs.slice(-15).map(m => m.innerText.trim()).filter(t => t.length > 0 && !isJunk(t));
+                    return [];
+                }, JUNK_KEYWORDS);
 
-            console.log(`[PAIEŠKA] Atsisiųsta nauja istorija. Ilgis: ${history.length}`);
-            // Uždaryti popup'ą, kad sendMessage() vėl galėtų jį švariai atidaryti
-            await page.keyboard.press('Escape');
-            await page.waitForTimeout(1000);
-          } else {
-            console.log(`[PAIEŠKA] ⚠️ Nerastas mygtukas "Rašyti žinutę".`);
-          }
-
-          // 2. Siųsti AI su istorija
-          const reply = await analyzeAndRespond(profileData, history);
-          if (reply) {
-            // Visada einame į profilio URL, kad iššauktume popup, kaip prašė vartotojas
-            const sent = await sendMessage(page, reply, profileData.profileUrl, profile.name);
-            if (sent) {
-              logActivity(`✅ Pirma žinutė išsiųsta: ${profile.name}`, 'success');
-
-              // 6. Patikrinkim, ar po išsiuntimo atsirado nauja žinutė DOM'e (tame pačiame Pop-up)
-              await page.waitForTimeout(2000);
-              console.log('[VERIFY] Tikrinamas išsiuntimo statusas per Pop-up...');
-
-              // Papildomai spustelime "Rašyti žinutę", jeigu popup po išsiuntimo užsidarė
-              const writeBtnV = page.locator('.button-write-message, .button-new-message, .__callNewMessage').first();
-              if (await writeBtnV.count() > 0 && await writeBtnV.isVisible()) {
-                await writeBtnV.click();
-                await page.waitForTimeout(1500);
-              }
-
-              const postSendHistory = await page.evaluate((junkList) => {
-                const isJunk = (txt) => junkList.some(j => txt.includes(j));
-                const blocks = Array.from(document.querySelectorAll('.message, .msg, .chat-item, .thread-message, .message-bubble'));
-
-                // Jeigu nėra pranešimų blokų (fallback'as pagal seną elementą)
-                if (blocks.length === 0) {
-                  const msgs = Array.from(document.querySelectorAll('.message-text, .msg-content, .text-content'));
-                  return msgs.map(m => {
-                    const txt = m.innerText.trim();
-                    if (!txt || isJunk(txt)) return null;
-                    const isSent = m.className.includes('sent') || m.innerHTML.includes('Artūras') || m.innerHTML.includes('Arturas');
-                    return { text: txt, direction: isSent ? 'sent' : 'received' };
-                  }).filter(Boolean);
-                }
-
-                return blocks.map(el => {
-                  const txt = el.innerText.trim();
-                  if (!txt || isJunk(txt)) return null;
-                  const isSent = el.className.includes('sent') || el.className.includes('my-message')
-                    || el.innerHTML.includes('Artūras') || el.innerHTML.includes('Arturas');
-                  return { text: txt, direction: isSent ? 'sent' : 'received' };
-                }).filter(Boolean);
-              }, JUNK_KEYWORDS);
-
-              // Patikriname ar atsirado išsiųsta žinutė
-              const isSentSuccessfully = postSendHistory.some(m => m.direction === 'sent' && m.text.includes(reply.substring(0, 15)));
-
-              if (isSentSuccessfully) {
-                // 7. Įrašome į DB visą pokalbio istoriją
-                if (contactId) {
-                  const existingMsgs = DB.getConversation(contactId);
-                  const existingTexts = new Set(existingMsgs.map(m => m.content.trim()));
-
-                  for (const msg of postSendHistory) {
-                    if (!existingTexts.has(msg.text.trim())) {
-                      DB.saveMessage(contactId, msg.direction, msg.text);
-                      existingTexts.add(msg.text.trim());
-                    }
-                  }
-                  DB.updateStatus(contactId, 'messaged');
-                }
-                // Išsiunčiame patvirtinimą į Telegram
-                logActivity(`Telegram patvirtinimas išsiųstas po įrašo.`, 'info');
-                await notifyTelegram(`✅ Žinutė sėkmingai pristatyta kontaktui: ${profile.name}!\nIstorija ir išsiųsta žinutė įrašyta į duomenų bazę.`);
-              } else {
-                await notifyTelegram(`⚠️ Žinutė kontaktui ${profile.name} buvo "išsiųsta", bet programos naršyklė nemato jos naujo įrašo pokalbio lange po 4s.`);
-              }
-
+                console.log(`[PAIEŠKA] Atsisiųsta nauja istorija. Ilgis: ${history.length}`);
+                await page.keyboard.press('Escape');
+                await page.waitForTimeout(1000);
             } else {
-              await notifyTelegram(`⚠️ Žinutė patvirtinta, bet NEIŠSIŲSTA: ${profile.name}`);
+                console.log(`[PAIEŠKA] ⚠️ Nerastas mygtukas "Rašyti žinutę".`);
             }
-          }
-          await page.waitForTimeout(3000);
 
-          // --- NAUJA: Po vieno sėkmingo kontakto apdorojimo baigiame paiešką šiam ciklui ---
-          console.log('[PAIEŠKA] Vienas kontaktas apdorotas. Baigiama paieška pagal nustatymą.');
-          return;
+            let reply = null;
+            let keepTrying = true;
+
+            while (keepTrying) {
+                reply = await analyzeAndRespond(profileData, history);
+
+                if (reply === 'TIMEOUT') {
+                    console.log(`[PAIEŠKA] Negautas patvirtinimas per 15 min. Užmiegame 30 min ir bandysime dar kartą...`);
+                    await notifyTelegram(`💤 Negautas patvirtinimas. Robotas eina miegoti 30 minučių. Po to vėl atsiųs šį kontaktą (${profile.name}).`);
+                    await page.waitForTimeout(30 * 60 * 1000);
+                } else {
+                    keepTrying = false;
+                }
+            }
+
+            if (reply) {
+                const sent = await sendMessage(page, reply, profileData.profileUrl, profile.name);
+                if (sent) {
+                    logActivity(`✅ Pirma žinutė išsiųsta: ${profile.name}`, 'success');
+
+                    await page.waitForTimeout(2000);
+                    console.log('[VERIFY] Tikrinamas išsiuntimo statusas per Pop-up...');
+
+                    const writeBtnV = page.locator('.button-write-message, .button-new-message, .__callNewMessage').first();
+                    if (await writeBtnV.count() > 0 && await writeBtnV.isVisible()) {
+                        await writeBtnV.click();
+                        await page.waitForTimeout(1500);
+                    }
+
+                    const postSendHistory = await page.evaluate((junkList) => {
+                        const isJunk = (txt) => junkList.some(j => txt.includes(j));
+                        const blocks = Array.from(document.querySelectorAll('.message, .msg, .chat-item, .thread-message, .message-bubble'));
+
+                        if (blocks.length === 0) {
+                            const msgs = Array.from(document.querySelectorAll('.message-text, .msg-content, .text-content'));
+                            return msgs.map(m => {
+                                const txt = m.innerText.trim();
+                                if (!txt || isJunk(txt)) return null;
+                                const isSent = m.className.includes('sent') || m.innerHTML.includes('Artūras') || m.innerHTML.includes('Arturas');
+                                return { text: txt, direction: isSent ? 'sent' : 'received' };
+                            }).filter(Boolean);
+                        }
+
+                        return blocks.map(el => {
+                            const txt = el.innerText.trim();
+                            if (!txt || isJunk(txt)) return null;
+                            const isSent = el.className.includes('sent') || el.className.includes('my-message')
+                                || el.innerHTML.includes('Artūras') || el.innerHTML.includes('Arturas');
+                            return { text: txt, direction: isSent ? 'sent' : 'received' };
+                        }).filter(Boolean);
+                    }, JUNK_KEYWORDS);
+
+                    const isSentSuccessfully = postSendHistory.some(m => m.direction === 'sent' && m.text.includes(reply.substring(0, 15)));
+
+                    if (isSentSuccessfully) {
+                        const existingMsgs = DB.getConversation(c.id);
+                        const existingTexts = new Set(existingMsgs.map(m => m.content.trim()));
+
+                        for (const msg of postSendHistory) {
+                            if (!existingTexts.has(msg.text.trim())) {
+                                DB.saveMessage(c.id, msg.direction, msg.text);
+                                existingTexts.add(msg.text.trim());
+                            }
+                        }
+                        DB.updateStatus(c.id, 'messaged');
+                        logActivity(`Telegram patvirtinimas išsiųstas po įrašo.`, 'info');
+                        await notifyTelegram(`✅ Pirmoji žinutė sėkmingai pristatyta kontaktui: ${profile.name}!\nIstorija ir išsiųsta žinutė įrašyta į duomenų bazę.`);
+                    } else {
+                        console.log(`[VERIFY] Nepavyko rasti išsiųstos žinutės istorijoje iš Pop-up. Galimas false negative.`);
+                        await notifyTelegram(`⚠️ Žinutė kontaktui ${profile.name} buvo "išsiųsta", bet programos naršyklė nemato jos naujo įrašo pokalbio lange po 4s.`);
+                        DB.updateStatus(c.id, 'messaged');
+                    }
+                    await page.keyboard.press('Escape');
+
+                    console.log('[PAIEŠKA] Kontaktas apdorotas iš DB.');
+                    // Tęsiame ciklą su sekančiu
+                } else {
+                    logActivity(`Klaida siunčiant žinutę: ${profile.name}`, 'error');
+                    await notifyTelegram(`⚠️ Žinutė patvirtinta, bet NEIŠSIŲSTA: ${profile.name}`);
+                }
+            } else {
+                DB.updateStatus(c.id, 'skipped');
+                console.log('[PAIEŠKA] Kontaktas pažymėtas kaip skipped, apdorojamas kitas.');
+            }
+
         } catch (e) {
-          console.error(`[PAIEŠKA] Klaida su profiliu ${p.nameText}:`, e.message);
+            console.error(`[PAIEŠKA] Klaida profilyje ${c.profileUrl}:`, e.message);
         }
-      }
-    } catch (e) {
-      console.error(`[PAIEŠKA] Klaida su URL ${searchUrl}:`, e.message);
     }
-  }
 }
+
 
 // --- GAME PAGE (LIKE PROFILES) ---
 
@@ -1259,8 +1204,8 @@ async function run() {
     // 1. Patikrinti atsakymus į mūsų žinutes
     await checkReplies(page);
 
-    // 2. Ieškoti naujų kontaktų puslapiuose
-    await searchNewContacts(page);
+    // 2. Ieškoti naujų kontaktų puslapiuose -> dabar pakeista į DB apdorojimą
+    await processDatabaseContacts(page);
 
     // 3. Žaidimas - like Kaunas profiliai
     await playGame(page);
